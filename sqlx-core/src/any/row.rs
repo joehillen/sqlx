@@ -1,45 +1,23 @@
 use crate::any::error::mismatched_types;
-use crate::any::{Any, AnyColumn, AnyColumnIndex};
+use crate::any::{Any, AnyColumn, AnyValue};
 use crate::column::ColumnIndex;
 use crate::database::HasValueRef;
 use crate::decode::Decode;
 use crate::error::Error;
+use crate::ext::ustr::UStr;
 use crate::row::Row;
 use crate::type_info::TypeInfo;
 use crate::types::Type;
-use crate::value::ValueRef;
+use crate::value::{Value, ValueRef};
 
-#[cfg(feature = "postgres")]
-use crate::postgres::PgRow;
-
-#[cfg(feature = "mysql")]
-use crate::mysql::MySqlRow;
-
-#[cfg(feature = "sqlite")]
-use crate::sqlite::SqliteRow;
-
-#[cfg(feature = "mssql")]
-use crate::mssql::MssqlRow;
-
+#[derive(Clone)]
 pub struct AnyRow {
-    pub(crate) kind: AnyRowKind,
-    pub(crate) columns: Vec<AnyColumn>,
-}
-
-impl crate::row::private_row::Sealed for AnyRow {}
-
-pub(crate) enum AnyRowKind {
-    #[cfg(feature = "postgres")]
-    Postgres(PgRow),
-
-    #[cfg(feature = "mysql")]
-    MySql(MySqlRow),
-
-    #[cfg(feature = "sqlite")]
-    Sqlite(SqliteRow),
-
-    #[cfg(feature = "mssql")]
-    Mssql(MssqlRow),
+    #[doc(hidden)]
+    pub column_names: crate::HashMap<UStr, usize>,
+    #[doc(hidden)]
+    pub columns: Vec<AnyColumn>,
+    #[doc(hidden)]
+    pub values: Vec<AnyValue>,
 }
 
 impl Row for AnyRow {
@@ -57,20 +35,15 @@ impl Row for AnyRow {
         I: ColumnIndex<Self>,
     {
         let index = index.index(self)?;
-
-        match &self.kind {
-            #[cfg(feature = "postgres")]
-            AnyRowKind::Postgres(row) => row.try_get_raw(index).map(Into::into),
-
-            #[cfg(feature = "mysql")]
-            AnyRowKind::MySql(row) => row.try_get_raw(index).map(Into::into),
-
-            #[cfg(feature = "sqlite")]
-            AnyRowKind::Sqlite(row) => row.try_get_raw(index).map(Into::into),
-
-            #[cfg(feature = "mssql")]
-            AnyRowKind::Mssql(row) => row.try_get_raw(index).map(Into::into),
-        }
+        Ok(self
+            .columns
+            .get(index)
+            .ok_or_else(|| Error::ColumnIndexOutOfBounds {
+                index,
+                len: self.columns.len(),
+            })?
+            .value
+            .as_ref())
     }
 
     fn try_get<'r, T, I>(&'r self, index: I) -> Result<T, Error>
@@ -93,23 +66,11 @@ impl Row for AnyRow {
     }
 }
 
-impl<'i> ColumnIndex<AnyRow> for &'i str
-where
-    &'i str: AnyColumnIndex,
-{
+impl<'i> ColumnIndex<AnyRow> for &'i str {
     fn index(&self, row: &AnyRow) -> Result<usize, Error> {
-        match &row.kind {
-            #[cfg(feature = "postgres")]
-            AnyRowKind::Postgres(row) => self.index(row),
-
-            #[cfg(feature = "mysql")]
-            AnyRowKind::MySql(row) => self.index(row),
-
-            #[cfg(feature = "sqlite")]
-            AnyRowKind::Sqlite(row) => self.index(row),
-
-            #[cfg(feature = "mssql")]
-            AnyRowKind::Mssql(row) => self.index(row),
-        }
+        row.column_names
+            .get(*self)
+            .copied()
+            .ok_or_else(|| Error::ColumnNotFound(self.to_string()))
     }
 }
